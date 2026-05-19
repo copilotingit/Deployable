@@ -5,6 +5,10 @@ const app = document.getElementById("app");
 const base = new URL("./", location.href).pathname;
 const PREFIX = base + "uv/service/";
 
+let currentUrl = "";
+let history: string[] = [];
+let index = -1;
+
 async function init() {
   await navigator.serviceWorker.register("sw.js");
   await navigator.serviceWorker.ready;
@@ -24,19 +28,254 @@ async function init() {
   );
 }
 
+const startPageHTML = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      font-family: "Nunito", sans-serif;
+      background: #111;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+    .container {
+      width: 90%;
+      max-width: 680px;
+      text-align: center;
+    }
+    .logo-container {
+      margin-bottom: 24px;
+    }
+    .logo {
+      width: 400px;
+      max-width: 80%;
+      height: auto;
+      display: block;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 34px;
+      margin: 0 0 18px;
+      font-weight: 600;
+    }
+    form {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    input {
+      flex: 1;
+      padding: 14px 16px;
+      font-size: 16px;
+      border: 1px solid #333;
+      border-radius: 8px;
+      background: #1a1a1a;
+      color: #fff;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input:focus {
+      border-color: #555;
+    }
+    button {
+      padding: 14px 20px;
+      font-size: 16px;
+      border: 1px solid #333;
+      border-radius: 8px;
+      background: #1a1a1a;
+      color: #fff;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover {
+      background: #222;
+    }
+    button:active {
+      background: #2a2a2a;
+    }
+    p {
+      margin-top: 14px;
+      font-size: 13px;
+      color: #aaa;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo-container">
+      <img src="${logo}" class="logo" alt="Logo" />
+    </div>
+    <h1>Search</h1>
+    <form id="search-form">
+      <input id="search-input" type="text" placeholder="Enter URL or search query" autocomplete="off" autofocus />
+      <button type="submit">Go</button>
+    </form>
+    <p>Type a URL or a search query</p>
+  </div>
+  <script>
+    const form = document.getElementById("search-form");
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const value = document.getElementById("search-input").value.trim();
+      if (!value) return;
+      parent.postMessage({ type: "navigate", value }, "*");
+    });
+  </script>
+</body>
+</html>
+`;
+
+const homeDataURL =
+  "data:text/html;charset=utf-8," + encodeURIComponent(startPageHTML);
+
 if (app) {
   app.innerHTML = `
-    <div class="logo-container"><img src="${logo}" alt="Logo" class="logo" /></div>
-    <h1>Welcome to Deployable!</h1>
+    <div id="topbar">
+      <button id="back-btn" title="Back">&#8592;</button>
+      <button id="forward-btn" title="Forward">&#8594;</button>
+      <button id="home-btn" title="Home">&#8962;</button>
+      <input id="url-bar" placeholder="Enter URL or search..." autocomplete="off" />
+      <button id="go-btn">Go</button>
+    </div>
     <iframe id="proxy-frame"></iframe>
   `;
+}
+
+const normalizeUrl = (u: string) => {
+  try {
+    return new URL(u).href;
+  } catch {
+    return u;
+  }
+};
+
+function load(
+  frame: HTMLIFrameElement,
+  urlBar: HTMLInputElement,
+  url: string,
+  isHome: boolean = false,
+  push: boolean = true,
+) {
+  if (push) {
+    history = history.slice(0, index + 1);
+    history.push(url);
+    index++;
+  }
+
+  currentUrl = url;
+
+  if (isHome) {
+    urlBar.value = "";
+    frame.src = homeDataURL;
+  } else {
+    urlBar.value = url;
+    const encodedUrl = (window as any).Ultraviolet.codec.xor.encode(url);
+    frame.src = PREFIX + encodedUrl;
+  }
 }
 
 init()
   .then(() => {
     const frame = document.getElementById("proxy-frame") as HTMLIFrameElement;
-    const targetUrl = "https://duckduckgo.com";
-    const encodedUrl = (window as any).Ultraviolet.codec.xor.encode(targetUrl);
-    frame.src = PREFIX + encodedUrl;
+    const urlBar = document.getElementById("url-bar") as HTMLInputElement;
+    const goBtn = document.getElementById("go-btn") as HTMLButtonElement;
+    const backBtn = document.getElementById("back-btn") as HTMLButtonElement;
+    const forwardBtn = document.getElementById(
+      "forward-btn",
+    ) as HTMLButtonElement;
+    const homeBtn = document.getElementById("home-btn") as HTMLButtonElement;
+
+    frame.addEventListener("load", () => {
+      try {
+        const frameHref = frame.contentWindow?.location.href;
+
+        if (frameHref && frameHref.includes(PREFIX)) {
+          const encodedUrl = frameHref.substring(
+            frameHref.indexOf(PREFIX) + PREFIX.length,
+          );
+          const decodedUrl = (window as any).Ultraviolet.codec.xor.decode(
+            encodedUrl,
+          );
+
+          if (
+            decodedUrl &&
+            normalizeUrl(decodedUrl) !== normalizeUrl(currentUrl)
+          ) {
+            currentUrl = decodedUrl;
+            urlBar.value = decodedUrl;
+
+            history = history.slice(0, index + 1);
+            history.push(decodedUrl);
+            index++;
+          }
+        }
+      } catch (err) {
+        console.warn("Could not sync iframe URL:", err);
+      }
+    });
+
+    function navigate(input: string) {
+      input = input.trim();
+      if (!input) return;
+
+      const isUrl =
+        /^https?:\/\//.test(input) ||
+        (/^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:\/.*)?$/.test(input) &&
+          !input.includes(" "));
+
+      let targetUrl: string;
+
+      if (isUrl) {
+        targetUrl = /^https?:\/\//.test(input) ? input : "https://" + input;
+      } else {
+        targetUrl = "https://duckduckgo.com/?q=" + encodeURIComponent(input);
+      }
+
+      load(frame, urlBar, targetUrl, false, true);
+    }
+
+    goBtn.onclick = () => navigate(urlBar.value);
+
+    urlBar.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") navigate(urlBar.value);
+    });
+
+    backBtn.onclick = () => {
+      if (index > 0) {
+        index--;
+        const target = history[index];
+        load(frame, urlBar, target, target === homeDataURL, false);
+      }
+    };
+
+    forwardBtn.onclick = () => {
+      if (index < history.length - 1) {
+        index++;
+        const target = history[index];
+        load(frame, urlBar, target, target === homeDataURL, false);
+      }
+    };
+
+    homeBtn.onclick = () => {
+      if (currentUrl !== homeDataURL) {
+        load(frame, urlBar, homeDataURL, true, true);
+      }
+    };
+
+    window.addEventListener("message", (event) => {
+      if (event.data?.type !== "navigate") return;
+      navigate(String(event.data.value || ""));
+    });
+
+    load(frame, urlBar, homeDataURL, true, true);
   })
   .catch(console.error);
